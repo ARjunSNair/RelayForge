@@ -1,0 +1,49 @@
+{
+  "name": "relayforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant webhook delivery platform",
+  "type": "module",
+  "engines": {
+    "node": ">=20.17.0"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "db:migrate": "tsx --conditions=source packages/database/src/cli/migrate.ts",
+    "admin:create-tenant": "tsx --conditions=source apps/api/src/cli/create-tenant.ts",
+    "dev:api": "pnpm --filter @relayforge/api run dev",
+    "dev:publisher": "pnpm --filter @relayforge/outbox-publisher run dev",
+    "dev:worker": "pnpm --filter @relayforge/delivery-worker run dev",
+    "receiver": "node tests/webhook-receiver.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.15.0",
+    "@relayforge/config": "workspace:*",
+    "@relayforge/contracts": "workspace:*",
+    "@relayforge/database": "workspace:*",
+    "@relayforge/messaging": "workspace:*",
+    "@relayforge/observability": "workspace:*",
+    "@relayforge/security": "workspace:*",
+    "@types/node": "20.17.6",
+    "eslint": "9.15.0",
+    "eslint-config-prettier": "9.1.0",
+    "prettier": "3.3.3",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3",
+    "typescript-eslint": "8.15.0",
+    "vitest": "2.1.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "light-my-request": "6.6.0"
+    }
+  }
+}

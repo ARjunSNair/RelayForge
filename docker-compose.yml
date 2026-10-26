@@ -1,0 +1,72 @@
+# Full local stack. For day-to-day development you can also run only `postgres`
+# here and the apps with `pnpm dev:*` (see README).
+#
+# The encryption key below is a DEVELOPMENT-ONLY placeholder. Never reuse it.
+
+x-app-env: &app-env
+  NODE_ENV: development
+  LOG_LEVEL: info
+  DATABASE_URL: postgresql://relayforge:relayforge_dev@postgres:5432/relayforge
+  QUEUE_TRANSPORT: postgres
+  SIGNING_SECRET_ENCRYPTION_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
+  # Lets the worker reach the http://webhook-receiver container. Development only.
+  ALLOW_INSECURE_DESTINATIONS: 'true'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relayforge
+      POSTGRES_PASSWORD: relayforge_dev
+      POSTGRES_DB: relayforge
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U relayforge']
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build: { context: ., args: { APP: api } }
+    environment: *app-env
+    command: ['node', 'node_modules/@relayforge/database/dist/cli/migrate.js']
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: { context: ., args: { APP: api } }
+    environment: *app-env
+    ports:
+      - '3000:3000'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  outbox-publisher:
+    build: { context: ., args: { APP: outbox-publisher } }
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  delivery-worker:
+    build: { context: ., args: { APP: delivery-worker } }
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  webhook-receiver:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./tests/webhook-receiver.mjs:/app/webhook-receiver.mjs:ro
+    command: ['node', 'webhook-receiver.mjs']
+    environment:
+      PORT: 9090
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+    ports:
+      - '9090:9090'
+
+volumes:
+  pgdata:
