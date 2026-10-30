@@ -3,10 +3,12 @@
 Multi-tenant webhook delivery platform: accept events durably, then deliver them to
 customer HTTPS endpoints with signing, retries, dead-lettering, replay and delivery history.
 
-This is **iteration 1**, the vertical slice from the
-[architecture & implementation design](RelayForge_Architecture_and_Implementation_Design.md) (§20).
-It covers milestones 0–1 and the core of milestones 2–3. See [docs/roadmap.md](docs/roadmap.md)
-for what is done and what comes next.
+This is **iteration 2**. Iteration 1 was the vertical slice from the
+[architecture & implementation design](RelayForge_Architecture_and_Implementation_Design.md) (§20),
+covering milestones 0–3. Iteration 2 completes milestone 4 (security and operations): metrics, trace
+propagation, API key management, secret and key rotation, delivery fairness with an endpoint circuit
+breaker, distributed rate limiting and retention. See [docs/roadmap.md](docs/roadmap.md) for what is
+done and what comes next.
 
 ```
 client ──HTTPS+API key──▶ API ──one transaction──▶ events + deliveries + outbox (PostgreSQL)
@@ -32,19 +34,23 @@ client ──HTTPS+API key──▶ API ──one transaction──▶ events + 
   - `GET /v1/deliveries`, with cursor pagination
   - `GET /v1/deliveries/:id`, with attempt history
   - `POST /v1/deliveries/:id/replay`
-  - `/health/live` and `/health/ready`
-- **Outbox publisher:** claims rows with leases (`FOR UPDATE SKIP LOCKED`), publishes using the outbox ID as the message ID, and marks a row published only after the broker acknowledges. If the broker is down, it backs off with jitter. It also runs the **retry scheduler** (due retries → queued) and recovers stalled deliveries.
+  - `POST/GET/DELETE /v1/api-keys`: tenant self-service keys. A key can't grant scopes it lacks.
+  - `/health/live`, `/health/ready`, and `/metrics` (Prometheus; requires `METRICS_TOKEN`)
+- **Outbox publisher:** claims rows with leases (`FOR UPDATE SKIP LOCKED`), publishes using the outbox ID as the message ID, and marks a row published only after the broker acknowledges. If the broker is down, it backs off with jitter. It also runs the **retry scheduler** (due retries → queued), recovers stalled deliveries, and runs **retention** in bounded batches.
 - **Delivery worker:**
   - Claims each delivery under an attempt-number fence, so stale and duplicate messages can't run an old attempt.
   - Sends an HMAC-SHA256-signed POST with strict timeouts and never follows redirects.
   - Records the attempt and the next state, then completes the message.
   - Handles retries (408/425/429/5xx, timeouts and network errors) with full-jitter backoff and `Retry-After`. 4xx responses and blocked destinations are dead-lettered, and so are deliveries that hit the attempt limit or event age limit.
+  - Enforces per-endpoint and per-tenant concurrency caps, and suspends endpoints that keep failing (a circuit breaker with a half-open probe). Postponed deliveries don't use up attempts ([ADR-008](docs/decisions/ADR-008-fair-claims-and-endpoint-circuit-breaker.md)).
+- **Observability:** JSON logs with a `trace_id`, plus a W3C `traceparent` that is propagated from the API request through
+  the outbox and queue to the destination. Prometheus metrics (design §10.2) are served by every service.
 - **Security:**
-  - Hashed API keys with scopes.
-  - Signing secrets encrypted at rest.
+  - Hashed API keys with scopes, managed through the API.
+  - Signing secrets encrypted at rest under versioned keys, with a rotation runbook. Per-endpoint secret rotation supports an overlap window.
   - SSRF defences, including DNS pinning at connect time.
   - Tenant isolation, which is tested.
-  - Rate limits, an audit log and log redaction.
+  - Per-tenant rate limits shared across replicas, an audit log, and log redaction.
 
   See [SECURITY.md](SECURITY.md).
 
@@ -91,6 +97,14 @@ curl -s "localhost:3000/v1/deliveries" -H "authorization: Bearer $KEY"
 curl -s "localhost:3000/v1/deliveries/<deliveryId>" -H "authorization: Bearer $KEY"
 ```
 
+### Demo: rotate a signing secret without breaking the receiver
+
+```bash
+# Sign with both secrets for an hour; the receiver above still verifies with the old one
+curl -s localhost:3000/v1/endpoints/<endpointId>/rotate-secret -H "authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"overlapSeconds":3600}'
+```
+
 Other receiver paths: `/hooks/fail` (500), `/hooks/reject` (400, dead-lettered immediately and then
 replayable), `/hooks/limited` (429 + `Retry-After`) and `/hooks/slow` (timeout). Use a small
 `RETRY_BASE_DELAY_MS` (for example 500) to see retries quickly.
@@ -108,20 +122,22 @@ See [docs/webhooks.md](docs/webhooks.md) for headers, the exact signed bytes, an
 | `pnpm test:unit` | fast unit tests (no database) |
 | `DATABASE_URL=postgresql://…/relayforge_test pnpm test:integration` | API and pipeline tests against real PostgreSQL. **The schema is dropped and recreated**, and the DB name must contain `test`. |
 | `pnpm build` | compile all packages to `dist/` |
+| `pnpm admin:create-tenant` / `admin:create-api-key` | provision a tenant, or an extra key for an existing tenant |
+| `pnpm admin:rewrap-secrets` | re-encrypt signing secrets under the primary key ([runbook](docs/runbooks/rotate-encryption-key.md)) |
 | `docker build --build-arg APP=api .` | build an image (`api`, `outbox-publisher`, `delivery-worker`) |
 
 ### Layout
 
 ```
-apps/api               Fastify API (auth, endpoints, events, deliveries, replay)
-apps/outbox-publisher  outbox relay + retry scheduler + stalled-delivery recovery
-apps/delivery-worker   queue consumer, retry policy, SSRF-safe HTTP client
+apps/api               Fastify API (auth, endpoints, events, deliveries, replay, API keys, metrics)
+apps/outbox-publisher  outbox relay + retry scheduler + stalled-delivery recovery + retention
+apps/delivery-worker   queue consumer, fair claims + circuit breaker, retry policy, SSRF-safe HTTP client
 packages/config        validated environment configuration
 packages/contracts     statuses, error envelope, queue message contract (v1)
 packages/database      pool, transactions, migrations, shared outbox/status helpers
 packages/messaging     queue interfaces + Service Bus and PostgreSQL transports
-packages/security      API keys, secret encryption, signing, SSRF policy
-packages/observability structured logging with redaction
+packages/security      API keys, key-versioned secret encryption, signing, SSRF policy
+packages/observability structured logging with redaction, Prometheus metrics, trace context
 db/migrations          SQL migrations
 tests/integration      API + end-to-end pipeline tests
 ```

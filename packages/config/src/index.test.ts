@@ -39,4 +39,28 @@ describe('config', () => {
       }).QUEUE_TRANSPORT,
     ).toBe('servicebus');
   });
+
+  it('accepts previous encryption keys and validates their format', () => {
+    const other = Buffer.alloc(32, 2).toString('base64');
+    const config = loadWorkerConfig({
+      ...base,
+      SIGNING_SECRET_ENCRYPTION_KEY_ID: 'k2',
+      SIGNING_SECRET_PREVIOUS_KEYS: `k1:${other}`,
+    });
+    expect(config.SIGNING_SECRET_ENCRYPTION_KEY_ID).toBe('k2');
+    expect(loadApiConfig(base).SIGNING_SECRET_ENCRYPTION_KEY_ID).toBe('k1');
+    expect(() => loadApiConfig({ ...base, SIGNING_SECRET_PREVIOUS_KEYS: 'k1:short' })).toThrow(
+      /SIGNING_SECRET_PREVIOUS_KEYS/,
+    );
+    expect(() => loadApiConfig({ ...base, SIGNING_SECRET_PREVIOUS_KEYS: other })).toThrow(
+      /SIGNING_SECRET_PREVIOUS_KEYS/,
+    );
+  });
+
+  it('treats empty optional settings as unset', () => {
+    const config = loadWorkerConfig({ ...base, METRICS_TOKEN: '', METRICS_PORT: '' });
+    expect(config.METRICS_TOKEN).toBeUndefined();
+    expect(config.METRICS_PORT).toBeUndefined();
+    expect(() => loadWorkerConfig({ ...base, METRICS_TOKEN: 'short' })).toThrow(/METRICS_TOKEN/);
+  });
 });

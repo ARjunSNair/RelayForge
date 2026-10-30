@@ -10,6 +10,7 @@ export const SCOPES = [
   'events:write',
   'deliveries:read',
   'deliveries:replay',
+  'api_keys:manage',
 ] as const;
 export type Scope = (typeof SCOPES)[number];
 

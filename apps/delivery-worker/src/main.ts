@@ -1,8 +1,8 @@
 import { loadWorkerConfig } from '@relayforge/config';
 import { createPool } from '@relayforge/database';
 import { createQueue } from '@relayforge/messaging';
-import { createLogger } from '@relayforge/observability';
-import { SecretBox } from '@relayforge/security';
+import { collectProcessMetrics, createLogger, startMetricsServer } from '@relayforge/observability';
+import { SecretKeyring } from '@relayforge/security';
 import { WebhookHttpClient } from './http-client.js';
 import { DeliveryProcessor } from './processor.js';
 import { DeliveryWorker } from './worker.js';
@@ -24,7 +24,11 @@ const http = new WebhookHttpClient({
 
 const processor = new DeliveryProcessor({
   pool,
-  secretBox: new SecretBox(config.SIGNING_SECRET_ENCRYPTION_KEY),
+  keyring: new SecretKeyring(
+    config.SIGNING_SECRET_ENCRYPTION_KEY_ID,
+    config.SIGNING_SECRET_ENCRYPTION_KEY,
+    SecretKeyring.parsePrevious(config.SIGNING_SECRET_PREVIOUS_KEYS),
+  ),
   http,
   logger,
   leaseMs,
@@ -35,11 +39,23 @@ const processor = new DeliveryProcessor({
     baseDelayMs: config.RETRY_BASE_DELAY_MS,
     maxDelayMs: config.RETRY_MAX_DELAY_MS,
   },
+  fairness: {
+    endpointDefaultConcurrency: config.ENDPOINT_DEFAULT_CONCURRENCY,
+    tenantMaxConcurrency: config.TENANT_MAX_CONCURRENCY,
+    deferMs: config.CONCURRENCY_DEFER_MS,
+    failureThreshold: config.ENDPOINT_FAILURE_THRESHOLD,
+    suspensionMs: config.ENDPOINT_SUSPENSION_MS,
+  },
 });
 const worker = new DeliveryWorker(queue, processor, logger, {
   concurrency: config.WORKER_CONCURRENCY,
   pollIntervalMs: config.WORKER_POLL_INTERVAL_MS,
 });
+
+collectProcessMetrics();
+const metricsServer = config.METRICS_PORT
+  ? startMetricsServer({ port: config.METRICS_PORT, token: config.METRICS_TOKEN })
+  : undefined;
 
 const shutdown = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -61,5 +77,6 @@ logger.info(
 await worker.run(shutdown.signal);
 await queue.close();
 await http.close();
+metricsServer?.close();
 await pool.end();
 logger.info('delivery worker stopped');

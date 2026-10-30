@@ -20,11 +20,12 @@ export async function enqueueDueRetries(pool: Pool, limit: number): Promise<numb
          FROM due WHERE d.id = due.id
        RETURNING d.id, d.tenant_id, d.event_id, d.attempt_count
      )
-     INSERT INTO outbox_events (tenant_id, event_id, message_type, payload)
-     SELECT tenant_id, event_id, 'delivery.requested',
-            jsonb_build_object('version', 1, 'deliveryId', id, 'tenantId', tenant_id,
-                               'eventId', event_id, 'attempt', attempt_count + 1)
-       FROM requeued`,
+     INSERT INTO outbox_events (tenant_id, event_id, message_type, payload, traceparent)
+     SELECT r.tenant_id, r.event_id, 'delivery.requested',
+            jsonb_build_object('version', 1, 'deliveryId', r.id, 'tenantId', r.tenant_id,
+                               'eventId', r.event_id, 'attempt', r.attempt_count + 1),
+            e.traceparent
+       FROM requeued r JOIN events e ON e.id = r.event_id`,
     [limit],
   );
   return rowCount ?? 0;
@@ -50,11 +51,12 @@ export async function recoverStalledDeliveries(pool: Pool, limit: number): Promi
          FROM stalled WHERE d.id = stalled.id
        RETURNING d.id, d.tenant_id, d.event_id, d.attempt_count
      )
-     INSERT INTO outbox_events (tenant_id, event_id, message_type, payload)
-     SELECT tenant_id, event_id, 'delivery.requested',
-            jsonb_build_object('version', 1, 'deliveryId', id, 'tenantId', tenant_id,
-                               'eventId', event_id, 'attempt', attempt_count + 1)
-       FROM requeued`,
+     INSERT INTO outbox_events (tenant_id, event_id, message_type, payload, traceparent)
+     SELECT r.tenant_id, r.event_id, 'delivery.requested',
+            jsonb_build_object('version', 1, 'deliveryId', r.id, 'tenantId', r.tenant_id,
+                               'eventId', r.event_id, 'attempt', r.attempt_count + 1),
+            e.traceparent
+       FROM requeued r JOIN events e ON e.id = r.event_id`,
     [limit],
   );
   return rowCount ?? 0;

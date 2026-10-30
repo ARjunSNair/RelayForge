@@ -27,7 +27,13 @@ export class PostgresQueue implements QueueSender, QueueReceiver {
         this.queue,
         messages.map((m) => m.messageId),
         messages.map((m) => JSON.stringify(m.body)),
-        messages.map((m) => JSON.stringify({ subject: m.subject, correlationId: m.correlationId })),
+        messages.map((m) =>
+          JSON.stringify({
+            subject: m.subject,
+            correlationId: m.correlationId,
+            traceparent: m.traceparent,
+          }),
+        ),
       ],
     );
   }
@@ -36,7 +42,7 @@ export class PostgresQueue implements QueueSender, QueueReceiver {
     const { rows } = await this.pool.query<{
       message_id: string;
       body: unknown;
-      properties: { subject?: string; correlationId?: string };
+      properties: { subject?: string; correlationId?: string; traceparent?: string };
       delivery_count: number;
       lock_token: string;
     }>(
@@ -60,6 +66,7 @@ export class PostgresQueue implements QueueSender, QueueReceiver {
         body: r.body,
         deliveryCount: r.delivery_count,
         ...(r.properties.correlationId ? { correlationId: r.properties.correlationId } : {}),
+        ...(r.properties.traceparent ? { traceparent: r.properties.traceparent } : {}),
       };
       this.#locks.set(message, r.lock_token);
       return message;

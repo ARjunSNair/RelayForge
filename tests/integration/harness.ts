@@ -6,15 +6,19 @@ import { createTenantWithApiKey } from '../../apps/api/src/tenants.js';
 import { loadApiConfig } from '@relayforge/config';
 import { createPool, type Pool } from '@relayforge/database';
 import { WebhookHttpClient } from '../../apps/delivery-worker/src/http-client.js';
-import { DeliveryProcessor } from '../../apps/delivery-worker/src/processor.js';
+import {
+  DEFAULT_FAIRNESS,
+  DeliveryProcessor,
+  type FairnessSettings,
+} from '../../apps/delivery-worker/src/processor.js';
 import { DeliveryWorker } from '../../apps/delivery-worker/src/worker.js';
 import { PostgresQueue, type QueueSender } from '@relayforge/messaging';
 import { createLogger } from '@relayforge/observability';
 import { OutboxRelay } from '../../apps/outbox-publisher/src/outbox-relay.js';
-import { SecretBox } from '@relayforge/security';
+import { SecretKeyring } from '@relayforge/security';
 
 export const ENCRYPTION_KEY = randomBytes(32).toString('base64');
-export const secretBox = new SecretBox(ENCRYPTION_KEY);
+export const keyring = new SecretKeyring('k1', ENCRYPTION_KEY);
 export const logger = createLogger({ service: 'test', level: 'silent' });
 
 export function testPool(): Pool {
@@ -22,7 +26,7 @@ export function testPool(): Pool {
 }
 
 export async function resetData(pool: Pool): Promise<void> {
-  await pool.query(`TRUNCATE local_queue_messages, audit_events, delivery_attempts, deliveries, outbox_events,
+  await pool.query(`TRUNCATE rate_limit_counters, local_queue_messages, audit_events, delivery_attempts, deliveries, outbox_events,
     events, webhook_endpoints, api_keys, tenants CASCADE`);
 }
 
@@ -36,9 +40,10 @@ export async function makeApi(
     NODE_ENV: 'test',
     LOG_LEVEL: 'silent',
     ALLOW_INSECURE_DESTINATIONS: 'true',
+    RATE_LIMIT_STORE: 'memory',
     ...overrides,
   });
-  const app = await buildApp({ pool, config, secretBox });
+  const app = await buildApp({ pool, config, keyring });
   await app.ready();
   return app;
 }
@@ -133,6 +138,8 @@ export interface PipelineOptions {
   maxAttempts?: number;
   allowInsecure?: boolean;
   now?: () => number;
+  fairness?: Partial<FairnessSettings>;
+  random?: () => number;
 }
 
 export function makePipeline(pool: Pool, opts: PipelineOptions = {}) {
@@ -146,7 +153,7 @@ export function makePipeline(pool: Pool, opts: PipelineOptions = {}) {
   const http = new WebhookHttpClient({ timeoutMs, allowInsecure: opts.allowInsecure ?? true });
   const processor = new DeliveryProcessor({
     pool,
-    secretBox,
+    keyring,
     http,
     logger,
     leaseMs: timeoutMs + 5_000,
@@ -157,7 +164,9 @@ export function makePipeline(pool: Pool, opts: PipelineOptions = {}) {
       baseDelayMs: 1_000,
       maxDelayMs: 10_000,
     },
+    fairness: { ...DEFAULT_FAIRNESS, ...opts.fairness },
     ...(opts.now ? { now: opts.now } : {}),
+    ...(opts.random ? { random: opts.random } : {}),
   });
   const worker = new DeliveryWorker(queue, processor, logger, {
     concurrency: 10,

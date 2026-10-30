@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { makeApi, makeTenant, resetData, secretBox, testPool } from './harness.js';
+import { keyring, makeApi, makeTenant, resetData, testPool } from './harness.js';
 
 const pool = testPool();
 let api: Awaited<ReturnType<typeof makeApi>>;
@@ -87,16 +87,23 @@ describe('endpoints', () => {
     const created = await createEndpoint(t.headers);
     expect(created.signingSecret).toMatch(/^whsec_/);
 
-    const stored = await pool.query<{ signing_secret_ciphertext: Buffer }>(
-      'SELECT signing_secret_ciphertext FROM webhook_endpoints WHERE id = $1',
+    const stored = await pool.query<{
+      signing_secret_ciphertext: Buffer;
+      signing_secret_key_id: string;
+    }>(
+      'SELECT signing_secret_ciphertext, signing_secret_key_id FROM webhook_endpoints WHERE id = $1',
       [created.id],
     );
     expect(stored.rows[0]!.signing_secret_ciphertext.toString('utf8')).not.toContain(
       created.signingSecret,
     );
-    expect(secretBox.decrypt(stored.rows[0]!.signing_secret_ciphertext)).toBe(
-      created.signingSecret,
-    );
+    expect(stored.rows[0]!.signing_secret_key_id).toBe('k1');
+    expect(
+      keyring.decrypt({
+        keyId: stored.rows[0]!.signing_secret_key_id,
+        ciphertext: stored.rows[0]!.signing_secret_ciphertext,
+      }),
+    ).toBe(created.signingSecret);
 
     const get = await api.inject({ url: `/v1/endpoints/${created.id}`, headers: t.headers });
     expect(get.statusCode).toBe(200);

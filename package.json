@@ -19,6 +19,8 @@
     "test:integration": "vitest run --project integration",
     "db:migrate": "tsx --conditions=source packages/database/src/cli/migrate.ts",
     "admin:create-tenant": "tsx --conditions=source apps/api/src/cli/create-tenant.ts",
+    "admin:create-api-key": "tsx --conditions=source apps/api/src/cli/create-api-key.ts",
+    "admin:rewrap-secrets": "tsx --conditions=source apps/api/src/cli/rewrap-secrets.ts",
     "dev:api": "pnpm --filter @relayforge/api run dev",
     "dev:publisher": "pnpm --filter @relayforge/outbox-publisher run dev",
     "dev:worker": "pnpm --filter @relayforge/delivery-worker run dev",

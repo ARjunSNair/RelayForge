@@ -10,6 +10,8 @@ export interface OutgoingMessage {
   subject: string;
   body: unknown;
   correlationId?: string;
+  /** W3C trace context, carried as a message property (design §10.3). */
+  traceparent?: string;
 }
 
 export interface ReceivedMessage {
@@ -19,6 +21,7 @@ export interface ReceivedMessage {
   /** 1 on first delivery; increases on every redelivery. */
   deliveryCount: number;
   correlationId?: string;
+  traceparent?: string;
 }
 
 export interface QueueSender {

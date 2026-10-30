@@ -6,6 +6,8 @@ export interface DeliveryToEnqueue {
   eventId: string;
   /** Attempt number the resulting message is allowed to execute. */
   attempt: number;
+  /** Trace context of the operation that requested the delivery. */
+  traceparent?: string | null;
 }
 
 /**
@@ -16,17 +18,19 @@ export interface DeliveryToEnqueue {
 export async function enqueueDeliveries(db: Queryable, items: DeliveryToEnqueue[]): Promise<void> {
   if (items.length === 0) return;
   await db.query(
-    `INSERT INTO outbox_events (tenant_id, event_id, message_type, payload)
+    `INSERT INTO outbox_events (tenant_id, event_id, message_type, payload, traceparent)
      SELECT t.tenant_id, t.event_id, 'delivery.requested',
             jsonb_build_object('version', 1, 'deliveryId', t.delivery_id, 'tenantId', t.tenant_id,
-                               'eventId', t.event_id, 'attempt', t.attempt)
-       FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::int[])
-            AS t(delivery_id, tenant_id, event_id, attempt)`,
+                               'eventId', t.event_id, 'attempt', t.attempt),
+            t.traceparent
+       FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::int[], $5::text[])
+            AS t(delivery_id, tenant_id, event_id, attempt, traceparent)`,
     [
       items.map((i) => i.deliveryId),
       items.map((i) => i.tenantId),
       items.map((i) => i.eventId),
       items.map((i) => i.attempt),
+      items.map((i) => i.traceparent ?? null),
     ],
   );
 }

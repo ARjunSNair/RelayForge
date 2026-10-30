@@ -37,3 +37,59 @@ export class SecretBox {
     return Buffer.concat([decipher.update(body), decipher.final()]).toString('utf8');
   }
 }
+
+/** A signing secret sealed under the data-encryption key named by `keyId`. */
+export interface SealedSecret {
+  keyId: string;
+  ciphertext: Buffer;
+}
+
+export const KEY_ID_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+
+/**
+ * Data-encryption keys by id. New secrets are sealed with the primary key;
+ * previous keys stay available for decryption until every row sealed with
+ * them has been rewrapped (see `pnpm admin:rewrap-secrets`).
+ */
+export class SecretKeyring {
+  readonly #boxes = new Map<string, SecretBox>();
+
+  constructor(
+    readonly primaryKeyId: string,
+    primaryKey: string,
+    previous: ReadonlyArray<{ id: string; key: string }> = [],
+  ) {
+    for (const { id, key } of [{ id: primaryKeyId, key: primaryKey }, ...previous]) {
+      if (!KEY_ID_PATTERN.test(id)) throw new Error(`Invalid encryption key id "${id}"`);
+      if (this.#boxes.has(id)) throw new Error(`Duplicate encryption key id "${id}"`);
+      this.#boxes.set(id, new SecretBox(key));
+    }
+  }
+
+  /** Parse `id:base64key,id:base64key` (the SIGNING_SECRET_PREVIOUS_KEYS format). */
+  static parsePrevious(spec: string | undefined): Array<{ id: string; key: string }> {
+    if (!spec?.trim()) return [];
+    return spec.split(',').map((entry) => {
+      const separator = entry.indexOf(':');
+      if (separator <= 0) throw new Error('Previous keys must be formatted as id:base64key');
+      return { id: entry.slice(0, separator).trim(), key: entry.slice(separator + 1).trim() };
+    });
+  }
+
+  encrypt(plaintext: string): SealedSecret {
+    return {
+      keyId: this.primaryKeyId,
+      ciphertext: this.#boxes.get(this.primaryKeyId)!.encrypt(plaintext),
+    };
+  }
+
+  decrypt(sealed: SealedSecret): string {
+    const box = this.#boxes.get(sealed.keyId);
+    if (!box) throw new Error(`Unknown encryption key id "${sealed.keyId}"`);
+    return box.decrypt(sealed.ciphertext);
+  }
+
+  has(keyId: string): boolean {
+    return this.#boxes.has(keyId);
+  }
+}

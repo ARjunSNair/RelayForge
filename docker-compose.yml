@@ -11,6 +11,8 @@ x-app-env: &app-env
   SIGNING_SECRET_ENCRYPTION_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
   # Lets the worker reach the http://webhook-receiver container. Development only.
   ALLOW_INSECURE_DESTINATIONS: 'true'
+  # Development-only placeholder. Scrape with: curl -H 'authorization: Bearer <token>' …/metrics
+  METRICS_TOKEN: dev-only-metrics-token
 
 services:
   postgres:

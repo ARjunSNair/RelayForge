@@ -49,3 +49,6 @@ export function errorFields(error: unknown): {
   }
   return { err_name: 'UnknownError', err_message: String(error) };
 }
+
+export * from './metrics.js';
+export * from './trace.js';

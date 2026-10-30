@@ -1,5 +1,6 @@
 import { AppError } from '@relayforge/contracts';
 import { enqueueDeliveries, withTransaction, type PoolClient } from '@relayforge/database';
+import { formatTraceparent, metrics } from '@relayforge/observability';
 import { fingerprint, sha256Hex, canonicalJson } from '@relayforge/security';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -142,12 +143,13 @@ export function eventRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod {
           endpointIds: endpointIds ? [...new Set(endpointIds)].sort() : null,
         });
 
+        const traceparent = formatTraceparent(request.trace);
         const result = await withTransaction(pool, async (tx) => {
           // Insert first: a concurrent request with the same key blocks on the
           // unique index until this transaction ends, then sees the winner.
           const inserted = await tx.query<{ id: string; created_at: Date }>(
-            `INSERT INTO events (tenant_id, event_type, payload, payload_hash, request_fingerprint, idempotency_key)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO events (tenant_id, event_type, payload, payload_hash, request_fingerprint, idempotency_key, traceparent)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (tenant_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
              RETURNING id, created_at`,
             [
@@ -157,6 +159,7 @@ export function eventRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod {
               sha256Hex(payloadJson),
               requestFingerprint,
               idempotencyKey,
+              traceparent,
             ],
           );
 
@@ -188,7 +191,13 @@ export function eventRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod {
           );
           await enqueueDeliveries(
             tx,
-            deliveries.map((d) => ({ deliveryId: d.id, tenantId, eventId: event.id, attempt: 1 })),
+            deliveries.map((d) => ({
+              deliveryId: d.id,
+              tenantId,
+              eventId: event.id,
+              attempt: 1,
+              traceparent,
+            })),
           );
           return { replayed: false, event };
         });
@@ -202,6 +211,7 @@ export function eventRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod {
           'event accepted',
         );
         if (result.replayed) reply.header('idempotent-replayed', 'true');
+        else metrics.eventsAccepted.inc();
         return reply.status(202).send(accepted(result.event.id, result.event.created_at));
       },
     );

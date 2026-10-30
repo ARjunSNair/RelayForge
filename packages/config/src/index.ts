@@ -6,6 +6,11 @@ const bool = z
   .transform((v) => v === 'true' || v === '1');
 
 const int = (fallback: number) => z.coerce.number().int().positive().default(fallback);
+const nonNegativeInt = (fallback: number) => z.coerce.number().int().min(0).default(fallback);
+/** Optional setting where an empty value (`NAME=` in .env) means unset. */
+const optional = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
+const port = optional(z.coerce.number().int().min(1).max(65535));
 
 const commonShape = {
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -23,6 +28,8 @@ const commonShape = {
    * destinations (e.g. a receiver on localhost). Refused in production.
    */
   ALLOW_INSECURE_DESTINATIONS: bool,
+  /** Bearer token required to scrape /metrics. Metrics are not served when unset. */
+  METRICS_TOKEN: optional(z.string().min(16)),
 };
 
 /** 32-byte AES-256-GCM key, base64 encoded. */
@@ -30,14 +37,43 @@ const encryptionKey = z
   .string()
   .refine((v) => Buffer.from(v, 'base64').length === 32, 'must be a base64-encoded 32-byte key');
 
+const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
+
+/**
+ * Signing secrets are sealed with the primary key (id + key) and remain
+ * readable with any previous key listed as `id:base64key,id:base64key`.
+ */
+const encryptionKeys = {
+  SIGNING_SECRET_ENCRYPTION_KEY: encryptionKey,
+  SIGNING_SECRET_ENCRYPTION_KEY_ID: z.string().regex(KEY_ID).default('k1'),
+  SIGNING_SECRET_PREVIOUS_KEYS: z
+    .string()
+    .optional()
+    .refine(
+      (v) =>
+        !v?.trim() ||
+        v.split(',').every((entry) => {
+          const [id, key, extra] = entry.trim().split(':');
+          return (
+            extra === undefined &&
+            KEY_ID.test(id ?? '') &&
+            Buffer.from(key ?? '', 'base64').length === 32
+          );
+        }),
+      'must be a comma-separated list of id:base64key with 32-byte keys',
+    ),
+};
+
 const apiSchema = z.object({
   ...commonShape,
   HOST: z.string().default('0.0.0.0'),
   PORT: int(3000),
-  SIGNING_SECRET_ENCRYPTION_KEY: encryptionKey,
+  ...encryptionKeys,
   MAX_EVENT_PAYLOAD_BYTES: int(256 * 1024),
   RATE_LIMIT_MAX: int(600),
   RATE_LIMIT_WINDOW_MS: int(60_000),
+  /** postgres: counters shared by all replicas. memory: per replica (single instance only). */
+  RATE_LIMIT_STORE: z.enum(['postgres', 'memory']).default('postgres'),
   MAX_REPLAYS_PER_DELIVERY: int(5),
 });
 
@@ -47,11 +83,20 @@ const publisherSchema = z.object({
   OUTBOX_BATCH_SIZE: int(100),
   OUTBOX_LEASE_MS: int(30_000),
   SCHEDULER_INTERVAL_MS: int(1_000),
+  /** Port for /metrics and /health/live; no listener when unset. */
+  METRICS_PORT: port,
+  RETENTION_INTERVAL_MS: int(10 * 60_000),
+  RETENTION_BATCH_SIZE: int(500),
+  /** Events whose deliveries are all finished are deleted, with their history, after this. */
+  RETENTION_EVENT_DAYS: int(30),
+  RETENTION_OUTBOX_HOURS: int(24),
+  RETENTION_QUEUE_DEAD_LETTER_DAYS: int(14),
 });
 
 const workerSchema = z.object({
   ...commonShape,
-  SIGNING_SECRET_ENCRYPTION_KEY: encryptionKey,
+  ...encryptionKeys,
+  METRICS_PORT: port,
   WORKER_CONCURRENCY: int(8),
   WORKER_POLL_INTERVAL_MS: int(500),
   DELIVERY_TIMEOUT_MS: int(10_000),
@@ -59,6 +104,15 @@ const workerSchema = z.object({
   DELIVERY_MAX_EVENT_AGE_HOURS: int(72),
   RETRY_BASE_DELAY_MS: int(5_000),
   RETRY_MAX_DELAY_MS: int(60 * 60 * 1000),
+  /** In-flight attempts allowed per endpoint unless the endpoint sets max_concurrency. */
+  ENDPOINT_DEFAULT_CONCURRENCY: int(4),
+  /** In-flight attempts allowed per tenant across all its endpoints. */
+  TENANT_MAX_CONCURRENCY: int(32),
+  /** How long a delivery waits before re-trying a claim that hit a concurrency cap. */
+  CONCURRENCY_DEFER_MS: int(2_000),
+  /** Consecutive retryable failures that suspend an endpoint; 0 disables the breaker. */
+  ENDPOINT_FAILURE_THRESHOLD: nonNegativeInt(10),
+  ENDPOINT_SUSPENSION_MS: int(5 * 60_000),
 });
 
 export type ApiConfig = z.infer<typeof apiSchema>;

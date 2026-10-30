@@ -19,7 +19,8 @@
 | `RelayForge-Delivery-Id` | One delivery execution (a replay gets a new one). |
 | `RelayForge-Attempt` | Attempt number within the delivery, starting at 1. |
 | `RelayForge-Timestamp` | Unix seconds when this attempt was signed. |
-| `RelayForge-Signature` | `v1=<hex>`. More than one may be comma-separated. |
+| `RelayForge-Signature` | `v1=<hex>`. More than one may be comma-separated (see rotation below). |
+| `traceparent` | W3C trace context. The trace id matches `attempts[].traceId` in the delivery API, so you can correlate with your own traces. |
 
 ## Verifying the signature
 
@@ -36,6 +37,20 @@ signature    = "v1=" + hex(HMAC_SHA256(key = signing_secret_utf8, signed_bytes))
 Every retry is re-signed with a fresh timestamp, so old captured requests stop verifying after
 the tolerance window.
 
+### Rotating your signing secret
+
+`POST /v1/endpoints/{id}/rotate-secret` returns a new secret. If you send `{"overlapSeconds": N}` (up to 7 days),
+each webhook carries **two** signatures for the next N seconds, one made with the new secret and one with the
+previous secret:
+
+```
+RelayForge-Signature: v1=<hex with new secret>,v1=<hex with previous secret>
+```
+
+A verifier that accepts any matching value (as described above) keeps working with either secret, so you can
+deploy the new secret at any time during the overlap. Without `overlapSeconds`, the previous secret
+stops being used immediately.
+
 The reference implementations are `verifySignature` in `packages/security/src/signing.ts` and
 `verify` in `tests/webhook-receiver.mjs`.
 
@@ -50,3 +65,12 @@ Test vector: secret `whsec_test`, timestamp `1700000000`, body `{}` →
 - **Other statuses** (other 4xx, 3xx, 501, 505) are permanent failures. Redirects are not followed.
 - Delivery is **at-least-once**: the same event can arrive more than once, for example when your
   response is lost. Make your handler idempotent by event ID.
+
+## Pacing and suspension
+
+- RelayForge sends at most `maxConcurrency` concurrent requests to an endpoint. You can set this per endpoint
+  (1–100); the platform default is 4.
+- After repeated retryable failures (10 in a row by default), deliveries to the endpoint pause for a few
+  minutes. When the pause ends, a single request probes the endpoint, and normal delivery resumes after it succeeds.
+  Paused deliveries keep all their remaining attempts. `GET /v1/endpoints/{id}` shows `health.suppressedUntil`,
+  and setting `status` to `active` resumes delivery immediately.

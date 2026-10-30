@@ -20,10 +20,16 @@ You need the event ID or delivery ID. Secrets are never required; they are not r
    | `PERMANENT_FAILURE` | Non-retryable HTTP status |
    | `ENDPOINT_POLICY_BLOCKED` | SSRF policy refused the destination |
 
-3. **Logs:** filter worker logs on `delivery_id` or `event_id`. Each attempt logs one
-   `operation=delivery.attempt` line with `outcome`, `http_status`, `error_code` and `duration_ms`.
-   Payloads and credentials are never logged.
-4. **Replay:** `POST /v1/deliveries/{deliveryId}/replay` works only for `dead_lettered` deliveries on an active
+3. **Logs:** filter worker logs on `delivery_id` or `event_id`, or on `trace_id` (from `attempts[].traceId`,
+   or from the `traceparent` response header of the original `POST /v1/events`). The trace id also links the API
+   request log. Each attempt logs one `operation=delivery.attempt` line with `outcome`, `http_status`,
+   `error_code` and `duration_ms`. Payloads and credentials are never logged.
+4. **Delivery waiting without attempts?** A `retry_scheduled` delivery whose `attemptCount` hasn't changed was
+   deferred by a concurrency cap or a suspended endpoint (ADR-008). Check `GET /v1/endpoints/{id}` → `health`.
+   If `suppressedUntil` is set, the endpoint failed repeatedly. Once the customer has fixed it,
+   `PATCH` it with `{"status":"active"}` to resume immediately. Worker logs contain `operation=endpoint.suppress`
+   at the moment it was suspended.
+5. **Replay:** `POST /v1/deliveries/{deliveryId}/replay` works only for `dead_lettered` deliveries on an active
    endpoint, up to `MAX_REPLAYS_PER_DELIVERY` times. Each replay is a new delivery and is audited.
 
 ## Pipeline health
@@ -37,4 +43,10 @@ SELECT last_error_code, count(*) FROM outbox_events WHERE published_at IS NULL G
 SELECT status, count(*) FROM deliveries GROUP BY 1;
 -- Stalled attempts (recovered automatically by the publisher's scheduler)
 SELECT count(*) FROM deliveries WHERE status = 'in_progress' AND locked_until < now();
+-- Suspended endpoints
+SELECT id, consecutive_failures, suppressed_until FROM webhook_endpoints WHERE suppressed_until > now();
 ```
+
+The same signals are available as metrics: `outbox_pending_count`, `outbox_oldest_age_seconds`,
+`delivery_queue_age_seconds` and `dead_letter_count` from the publisher, and `deliveries_total{outcome}`,
+`delivery_deferrals_total{reason}` and `endpoint_suppressions_total` from the workers.

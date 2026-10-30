@@ -5,8 +5,18 @@ import swaggerUi from '@fastify/swagger-ui';
 import type { ApiConfig } from '@relayforge/config';
 import { AppError } from '@relayforge/contracts';
 import { checkDatabase, type Pool } from '@relayforge/database';
-import { REDACT_PATHS } from '@relayforge/observability';
-import type { SecretBox } from '@relayforge/security';
+import {
+  REDACT_PATHS,
+  formatTraceparent,
+  metrics,
+  metricsAuthorized,
+  parseTraceparent,
+  registry,
+  startSpan,
+  statusClass,
+  type TraceContext,
+} from '@relayforge/observability';
+import type { SecretKeyring } from '@relayforge/security';
 import Fastify, { type FastifyInstance } from 'fastify';
 import {
   jsonSchemaTransform,
@@ -16,14 +26,23 @@ import {
 } from 'fastify-type-provider-zod';
 import { registerAuthentication } from './auth.js';
 import { registerErrorHandling } from './errors.js';
+import { apiKeyRoutes } from './modules/api-keys.js';
 import { deliveryRoutes } from './modules/deliveries.js';
 import { endpointRoutes } from './modules/endpoints.js';
 import { eventRoutes } from './modules/events.js';
+import { postgresRateLimitStore } from './rate-limit-store.js';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** This request's span; its traceparent is stored with accepted events. */
+    trace: TraceContext;
+  }
+}
 
 export interface AppDeps {
   pool: Pool;
   config: ApiConfig;
-  secretBox: SecretBox;
+  keyring: SecretKeyring;
 }
 
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -51,8 +70,22 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.decorateRequest('auth', null);
+  app.decorateRequest('trace', null as unknown as TraceContext);
+  app.addHook('onRequest', async (request) => {
+    request.trace = startSpan(parseTraceparent(request.headers.traceparent as string | undefined));
+    request.log = request.log.child({ trace_id: request.trace.traceId });
+  });
   app.addHook('onSend', async (request, reply) => {
     reply.header('x-request-id', request.id);
+    reply.header('traceparent', formatTraceparent(request.trace));
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    // Route templates only (bounded cardinality); unmatched paths share one label.
+    const route = request.routeOptions.url ?? 'unmatched';
+    if (route === '/metrics') return;
+    const labels = { route, method: request.method };
+    metrics.apiRequests.inc({ ...labels, status_class: statusClass(reply.statusCode) });
+    metrics.apiRequestDuration.observe(labels, reply.elapsedTime);
   });
   registerErrorHandling(app);
 
@@ -78,12 +111,28 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       .send({ status: db ? 'ok' : 'unavailable', checks: { database: db } });
   });
 
+  // Prometheus scrape endpoint, protected by METRICS_TOKEN; absent when no token is configured.
+  if (config.METRICS_TOKEN) {
+    app.get('/metrics', { schema: { hide: true } }, async (request, reply) => {
+      if (!metricsAuthorized(request.headers.authorization, config.METRICS_TOKEN)) {
+        throw new AppError('UNAUTHENTICATED', 'A valid metrics token is required');
+      }
+      return reply.type(registry.contentType).send(await registry.metrics());
+    });
+  }
+
   await app.register(
     async (v1) => {
       registerAuthentication(v1, pool);
-      // Keyed by tenant, so it runs after authentication (in-memory per replica in v1).
+      // Keyed by tenant, so it runs after authentication. Counters live in
+      // PostgreSQL so the limit holds across replicas.
       await v1.register(rateLimit, {
         hook: 'preHandler',
+        ...(config.RATE_LIMIT_STORE === 'postgres'
+          ? { store: postgresRateLimitStore(pool, 'tenant:') }
+          : {}),
+        // Fail open: a counter outage should not take the API down with it.
+        skipOnError: true,
         max: config.RATE_LIMIT_MAX,
         timeWindow: config.RATE_LIMIT_WINDOW_MS,
         keyGenerator: (request) => request.auth?.tenantId ?? request.ip,
@@ -92,6 +141,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       await v1.register(endpointRoutes(deps));
       await v1.register(eventRoutes(deps));
       await v1.register(deliveryRoutes(deps));
+      await v1.register(apiKeyRoutes(deps));
     },
     { prefix: '/v1' },
   );

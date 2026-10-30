@@ -16,6 +16,7 @@ interface ClaimedRow {
   message_type: string;
   payload: unknown;
   attempt_count: number;
+  traceparent: string | null;
 }
 
 /**
@@ -48,7 +49,7 @@ export class OutboxRelay {
                  ORDER BY next_attempt_at, created_at
                  LIMIT $3
                  FOR UPDATE SKIP LOCKED)
-      RETURNING o.id, o.event_id, o.message_type, o.payload, o.attempt_count`,
+      RETURNING o.id, o.event_id, o.message_type, o.payload, o.attempt_count, o.traceparent`,
       [this.opts.owner, this.opts.leaseMs, this.opts.batchSize],
     );
     if (rows.length === 0) return 0;
@@ -61,6 +62,7 @@ export class OutboxRelay {
           subject: r.message_type,
           body: r.payload,
           correlationId: r.event_id,
+          ...(r.traceparent ? { traceparent: r.traceparent } : {}),
         })),
       );
     } catch (error) {

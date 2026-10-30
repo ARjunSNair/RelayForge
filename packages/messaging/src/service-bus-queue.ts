@@ -45,6 +45,12 @@ export class ServiceBusQueue implements QueueSender, QueueReceiver {
         body: m.body,
         contentType: 'application/json',
         ...(m.correlationId ? { correlationId: m.correlationId } : {}),
+        // Diagnostic-Id is the property Azure SDK instrumentation reads.
+        ...(m.traceparent
+          ? {
+              applicationProperties: { traceparent: m.traceparent, 'Diagnostic-Id': m.traceparent },
+            }
+          : {}),
       };
       if (!batch.tryAddMessage(message)) {
         await this.#sender.sendMessages(batch);
@@ -60,12 +66,14 @@ export class ServiceBusQueue implements QueueSender, QueueReceiver {
     this.#receiver ??= this.#client.createReceiver(this.opts.queue, { receiveMode: 'peekLock' });
     const received = await this.#receiver.receiveMessages(maxMessages, { maxWaitTimeInMs: 5_000 });
     return received.map((raw) => {
+      const traceparent = raw.applicationProperties?.['traceparent'];
       const message: ReceivedMessage = {
         messageId: String(raw.messageId ?? ''),
         subject: raw.subject ?? '',
         body: raw.body as unknown,
         deliveryCount: raw.deliveryCount ?? 1,
         ...(raw.correlationId ? { correlationId: String(raw.correlationId) } : {}),
+        ...(typeof traceparent === 'string' ? { traceparent } : {}),
       };
       this.#raw.set(message, raw);
       return message;

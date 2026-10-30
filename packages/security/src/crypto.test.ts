@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { generateApiKey, hashApiKey, isWellFormedApiKey } from './api-keys.js';
 import { canonicalJson, fingerprint } from './fingerprint.js';
-import { SecretBox } from './secret-box.js';
+import { SecretBox, SecretKeyring } from './secret-box.js';
 import { generateSigningSecret, signPayload, verifySignature } from './signing.js';
 
 describe('API keys', () => {
@@ -18,6 +18,33 @@ describe('API keys', () => {
   it('rejects malformed keys', () => {
     expect(isWellFormedApiKey('rf_live_short')).toBe(false);
     expect(isWellFormedApiKey(`sk_live_${'a'.repeat(43)}`)).toBe(false);
+  });
+});
+
+describe('SecretKeyring', () => {
+  const k1 = randomBytes(32).toString('base64');
+  const k2 = randomBytes(32).toString('base64');
+
+  it('seals with the primary key and records its id', () => {
+    const ring = new SecretKeyring('k2', k2, [{ id: 'k1', key: k1 }]);
+    const sealed = ring.encrypt('whsec_example');
+    expect(sealed.keyId).toBe('k2');
+    expect(ring.decrypt(sealed)).toBe('whsec_example');
+  });
+
+  it('still opens secrets sealed under a previous key', () => {
+    const old = new SecretKeyring('k1', k1).encrypt('whsec_old');
+    const ring = new SecretKeyring('k2', k2, SecretKeyring.parsePrevious(`k1:${k1}`));
+    expect(ring.decrypt(old)).toBe('whsec_old');
+  });
+
+  it('refuses unknown key ids, duplicates and malformed specs', () => {
+    const ring = new SecretKeyring('k2', k2);
+    expect(() => ring.decrypt({ keyId: 'k1', ciphertext: Buffer.alloc(40) })).toThrow(/Unknown/);
+    expect(() => new SecretKeyring('k1', k1, [{ id: 'k1', key: k2 }])).toThrow(/Duplicate/);
+    expect(() => new SecretKeyring('bad id', k1)).toThrow(/Invalid/);
+    expect(() => SecretKeyring.parsePrevious('nocolon')).toThrow();
+    expect(SecretKeyring.parsePrevious(' ')).toEqual([]);
   });
 });
 

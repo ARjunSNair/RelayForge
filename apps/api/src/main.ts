@@ -1,6 +1,7 @@
 import { loadApiConfig } from '@relayforge/config';
 import { createPool } from '@relayforge/database';
-import { SecretBox } from '@relayforge/security';
+import { collectProcessMetrics } from '@relayforge/observability';
+import { SecretKeyring } from '@relayforge/security';
 import { buildApp } from './app.js';
 
 const config = loadApiConfig();
@@ -8,8 +9,13 @@ const pool = createPool(config.DATABASE_URL, config.DATABASE_POOL_MAX);
 const app = await buildApp({
   pool,
   config,
-  secretBox: new SecretBox(config.SIGNING_SECRET_ENCRYPTION_KEY),
+  keyring: new SecretKeyring(
+    config.SIGNING_SECRET_ENCRYPTION_KEY_ID,
+    config.SIGNING_SECRET_ENCRYPTION_KEY,
+    SecretKeyring.parsePrevious(config.SIGNING_SECRET_PREVIOUS_KEYS),
+  ),
 });
+collectProcessMetrics();
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {

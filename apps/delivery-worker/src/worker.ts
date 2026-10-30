@@ -1,5 +1,5 @@
 import { sleep, type QueueReceiver, type ReceivedMessage } from '@relayforge/messaging';
-import { errorFields, type Logger } from '@relayforge/observability';
+import { errorFields, metrics, type Logger } from '@relayforge/observability';
 import type { DeliveryProcessor, Disposition } from './processor.js';
 
 /**
@@ -48,6 +48,15 @@ export class DeliveryWorker {
   }
 
   async process(message: ReceivedMessage): Promise<void> {
+    metrics.workerActive.inc();
+    try {
+      await this.#process(message);
+    } finally {
+      metrics.workerActive.dec();
+    }
+  }
+
+  async #process(message: ReceivedMessage): Promise<void> {
     let disposition: Disposition;
     try {
       disposition = await this.processor.handle(message);

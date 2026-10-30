@@ -6,13 +6,15 @@ export type AuditAction =
   | 'endpoint.created'
   | 'endpoint.updated'
   | 'endpoint.secret_rotated'
-  | 'delivery.replayed';
+  | 'delivery.replayed'
+  | 'api_key.created'
+  | 'api_key.revoked';
 
 export async function recordAudit(
   db: Queryable,
   request: FastifyRequest,
   action: AuditAction,
-  resource: { type: 'endpoint' | 'delivery'; id: string },
+  resource: { type: 'endpoint' | 'delivery' | 'api_key'; id: string },
 ): Promise<void> {
   const { tenantId, apiKeyId } = tenantOf(request);
   await db.query(

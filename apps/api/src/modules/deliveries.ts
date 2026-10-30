@@ -1,5 +1,6 @@
 import { AppError, DELIVERY_STATUSES } from '@relayforge/contracts';
 import { enqueueDeliveries, refreshEventStatus, withTransaction } from '@relayforge/database';
+import { formatTraceparent } from '@relayforge/observability';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { recordAudit } from '../audit.js';
@@ -29,6 +30,8 @@ const AttemptView = z.object({
   httpStatus: z.number().int().nullable(),
   durationMs: z.number().int().nullable(),
   errorCode: z.string().nullable(),
+  /** W3C trace id shared by the API request, worker logs and the outbound request. */
+  traceId: z.string().nullable(),
 });
 
 interface DeliveryRow {
@@ -152,8 +155,9 @@ export function deliveryRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod
           http_status: number | null;
           duration_ms: number | null;
           error_code: string | null;
+          trace_id: string | null;
         }>(
-          `SELECT attempt_number, started_at, finished_at, outcome, http_status, duration_ms, error_code
+          `SELECT attempt_number, started_at, finished_at, outcome, http_status, duration_ms, error_code, trace_id
              FROM delivery_attempts WHERE tenant_id = $1 AND delivery_id = $2 ORDER BY attempt_number`,
           [tenantId, rows[0].id],
         );
@@ -167,6 +171,7 @@ export function deliveryRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod
             httpStatus: a.http_status,
             durationMs: a.duration_ms,
             errorCode: a.error_code,
+            traceId: a.trace_id,
           })),
         };
       },
@@ -229,7 +234,13 @@ export function deliveryRoutes({ pool, config }: AppDeps): FastifyPluginAsyncZod
           );
           const created = inserted.rows[0]!;
           await enqueueDeliveries(tx, [
-            { deliveryId: created.id, tenantId, eventId: created.event_id, attempt: 1 },
+            {
+              deliveryId: created.id,
+              tenantId,
+              eventId: created.event_id,
+              attempt: 1,
+              traceparent: formatTraceparent(request.trace),
+            },
           ]);
           await refreshEventStatus(tx, tenantId, created.event_id);
           await recordAudit(tx, request, 'delivery.replayed', {
