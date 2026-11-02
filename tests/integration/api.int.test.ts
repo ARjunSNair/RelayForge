@@ -429,6 +429,32 @@ describe('tenant isolation', () => {
   });
 });
 
+describe('endpoint listing', () => {
+  it('paginates with a stable cursor and rejects a bad cursor', async () => {
+    const t = await makeTenant(pool);
+    const created = [];
+    for (let i = 0; i < 5; i++) created.push((await createEndpoint(t.headers)).id);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const res = await api.inject({
+        url: `/v1/endpoints?limit=2${cursor ? `&cursor=${cursor}` : ''}`,
+        headers: t.headers,
+      });
+      expect(res.statusCode).toBe(200);
+      const page = res.json<{ data: { id: string }[]; nextCursor: string | null }>();
+      expect(page.data.length).toBeLessThanOrEqual(2);
+      seen.push(...page.data.map((d) => d.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toEqual(created.reverse());
+
+    const bad = await api.inject({ url: '/v1/endpoints?cursor=nope', headers: t.headers });
+    expect(bad.statusCode).toBe(400);
+  });
+});
+
 describe('delivery search', () => {
   it('paginates with a stable cursor and filters by status', async () => {
     const t = await makeTenant(pool);

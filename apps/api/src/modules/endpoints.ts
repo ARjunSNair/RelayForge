@@ -5,6 +5,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { recordAudit } from '../audit.js';
 import { tenantOf } from '../auth.js';
+import { decodeCursor, encodeCursor } from '../pagination.js';
 import type { AppDeps } from '../app.js';
 
 const EndpointView = z.object({
@@ -42,10 +43,12 @@ interface EndpointRow {
   suppressed_until: Date | null;
   created_at: Date;
   updated_at: Date;
+  created_at_text: string;
 }
 
 const COLUMNS = `id, url, description, status, max_concurrency, previous_secret_expires_at,
-  consecutive_failures, suppressed_until, created_at, updated_at`;
+  consecutive_failures, suppressed_until, created_at, updated_at,
+  created_at::text AS created_at_text`;
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 
@@ -122,16 +125,38 @@ export function endpointRoutes({ pool, config, keyring }: AppDeps): FastifyPlugi
         config: { scope: 'endpoints:read' },
         schema: {
           tags: ['endpoints'],
-          summary: 'List endpoints (most recent 100).',
-          response: { 200: z.object({ data: z.array(EndpointView) }) },
+          summary: 'List endpoints, newest first, with cursor pagination.',
+          querystring: z
+            .object({
+              cursor: z.string().max(200).optional(),
+              limit: z.coerce.number().int().min(1).max(100).default(100),
+            })
+            .strict(),
+          response: {
+            200: z.object({ data: z.array(EndpointView), nextCursor: z.string().nullable() }),
+          },
         },
       },
       async (request) => {
+        const { cursor, limit } = request.query;
+        const after = cursor ? decodeCursor(cursor) : null;
         const { rows } = await pool.query<EndpointRow>(
-          `SELECT ${COLUMNS} FROM webhook_endpoints WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100`,
-          [tenantOf(request).tenantId],
+          `SELECT ${COLUMNS} FROM webhook_endpoints
+            WHERE tenant_id = $1
+              AND ($2::timestamptz IS NULL OR (created_at, id) < ($2::timestamptz, $3::uuid))
+            ORDER BY created_at DESC, id DESC
+            LIMIT $4`,
+          [tenantOf(request).tenantId, after?.createdAt ?? null, after?.id ?? null, limit + 1],
         );
-        return { data: rows.map(toView) };
+        const page = rows.slice(0, limit);
+        const last = page[page.length - 1];
+        return {
+          data: page.map(toView),
+          nextCursor:
+            rows.length > limit && last
+              ? encodeCursor({ createdAt: last.created_at_text, id: last.id })
+              : null,
+        };
       },
     );
 

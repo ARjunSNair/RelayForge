@@ -69,7 +69,8 @@ kept the caller's trace id end to end, and served protected metrics from all thr
   from the submitted JSON. The body is signed exactly as sent.
 - A queue message that keeps failing to process (for example, the database is down) is abandoned with
   backoff indefinitely on the PostgreSQL transport. Service Bus caps this with `MaxDeliveryCount`.
-- `GET /v1/endpoints` and `GET /v1/api-keys` return the 100 most recent items without pagination.
+- `GET /v1/api-keys` returns the 100 most recent items without pagination. (`GET /v1/endpoints` takes
+  `cursor` and `limit`, like `GET /v1/deliveries`.)
 - A deferred delivery shows as `retry_scheduled` with an unchanged `attemptCount` until it is claimed.
 - If a dead-lettered delivery is replayed while retention is deleting its event, the replay can be lost.
   Retention only selects events older than `RETENTION_EVENT_DAYS` (30 by default), so this needs a replay of a
