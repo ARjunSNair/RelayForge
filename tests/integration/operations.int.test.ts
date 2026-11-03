@@ -135,6 +135,40 @@ describe('API key management', () => {
     expect(audit.rows.map((r) => r.action)).toEqual(['api_key.created', 'api_key.revoked']);
   });
 
+  it('paginates the key list with a stable cursor and rejects a bad cursor', async () => {
+    const t = await makeTenant(pool);
+    const create = async () =>
+      (
+        await api.inject({
+          method: 'POST',
+          url: '/v1/api-keys',
+          headers: t.headers,
+          payload: { scopes: ['events:read'] },
+        })
+      ).json<{ id: string }>().id;
+    const created: string[] = [];
+    for (let i = 0; i < 4; i++) created.push(await create());
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const res = await api.inject({
+        url: `/v1/api-keys?limit=2${cursor ? `&cursor=${cursor}` : ''}`,
+        headers: t.headers,
+      });
+      expect(res.statusCode).toBe(200);
+      const page = res.json<{ data: { id: string }[]; nextCursor: string | null }>();
+      expect(page.data.length).toBeLessThanOrEqual(2);
+      seen.push(...page.data.map((d) => d.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    // The tenant's own bootstrap key is the oldest, so it comes last.
+    expect(seen).toEqual([...created.reverse(), t.apiKeyId]);
+
+    const bad = await api.inject({ url: '/v1/api-keys?cursor=nope', headers: t.headers });
+    expect(bad.statusCode).toBe(400);
+  });
+
   it('refuses scope escalation, self-revocation and keys without the scope', async () => {
     const t = await makeTenant(pool);
     const limited = await makeTenant(pool, 'Limited', ['api_keys:manage', 'events:read']);

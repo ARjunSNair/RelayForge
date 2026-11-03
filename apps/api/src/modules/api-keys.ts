@@ -5,6 +5,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { recordAudit } from '../audit.js';
 import { SCOPES, tenantOf } from '../auth.js';
+import { decodeCursor, encodeCursor } from '../pagination.js';
 import type { AppDeps } from '../app.js';
 
 const ApiKeyView = z.object({
@@ -28,9 +29,11 @@ interface ApiKeyRow {
   last_used_at: Date | null;
   revoked_at: Date | null;
   created_at: Date;
+  created_at_text: string;
 }
 
-const COLUMNS = 'id, name, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at';
+const COLUMNS = `id, name, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at,
+  created_at::text AS created_at_text`;
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 
 function toView(row: ApiKeyRow): z.infer<typeof ApiKeyView> {
@@ -116,21 +119,45 @@ export function apiKeyRoutes({ pool }: AppDeps): FastifyPluginAsyncZod {
         config: { scope: 'api_keys:manage' },
         schema: {
           tags: ['api-keys'],
-          summary: 'List API keys (most recent 100).',
+          summary: 'List API keys, newest first, with cursor pagination.',
           querystring: z
-            .object({ includeRevoked: z.enum(['true', 'false']).default('false') })
+            .object({
+              includeRevoked: z.enum(['true', 'false']).default('false'),
+              cursor: z.string().max(200).optional(),
+              limit: z.coerce.number().int().min(1).max(100).default(100),
+            })
             .strict(),
-          response: { 200: z.object({ data: z.array(ApiKeyView) }) },
+          response: {
+            200: z.object({ data: z.array(ApiKeyView), nextCursor: z.string().nullable() }),
+          },
         },
       },
       async (request) => {
+        const { includeRevoked, cursor, limit } = request.query;
+        const after = cursor ? decodeCursor(cursor) : null;
         const { rows } = await pool.query<ApiKeyRow>(
           `SELECT ${COLUMNS} FROM api_keys
             WHERE tenant_id = $1 AND ($2 OR revoked_at IS NULL)
-            ORDER BY created_at DESC LIMIT 100`,
-          [tenantOf(request).tenantId, request.query.includeRevoked === 'true'],
+              AND ($3::timestamptz IS NULL OR (created_at, id) < ($3::timestamptz, $4::uuid))
+            ORDER BY created_at DESC, id DESC
+            LIMIT $5`,
+          [
+            tenantOf(request).tenantId,
+            includeRevoked === 'true',
+            after?.createdAt ?? null,
+            after?.id ?? null,
+            limit + 1,
+          ],
         );
-        return { data: rows.map(toView) };
+        const page = rows.slice(0, limit);
+        const last = page[page.length - 1];
+        return {
+          data: page.map(toView),
+          nextCursor:
+            rows.length > limit && last
+              ? encodeCursor({ createdAt: last.created_at_text, id: last.id })
+              : null,
+        };
       },
     );
 
