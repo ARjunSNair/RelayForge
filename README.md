@@ -28,13 +28,13 @@ client ──HTTPS+API key──▶ API ──one transaction──▶ events + 
 ## What works
 
 - **API** (Fastify, Zod-validated, OpenAPI at `/docs`):
-  - Endpoint management: create, list, get, patch, and `rotate-secret`. The signing secret is shown once.
+  - Endpoint management: create, list (with cursor pagination), get, patch, and `rotate-secret`. The signing secret is shown once.
   - `POST /v1/events`: idempotent via the `Idempotency-Key` header, and transactional (event, deliveries and outbox rows commit together before the 202).
   - `GET /v1/events/:id`
   - `GET /v1/deliveries`, with cursor pagination
   - `GET /v1/deliveries/:id`, with attempt history
   - `POST /v1/deliveries/:id/replay`
-  - `POST/GET/DELETE /v1/api-keys`: tenant self-service keys. A key can't grant scopes it lacks.
+  - `POST/GET/DELETE /v1/api-keys`: tenant self-service keys (list has cursor pagination). A key can't grant scopes it lacks.
   - `/health/live`, `/health/ready`, and `/metrics` (Prometheus; requires `METRICS_TOKEN`)
 - **Outbox publisher:** claims rows with leases (`FOR UPDATE SKIP LOCKED`), publishes using the outbox ID as the message ID, and marks a row published only after the broker acknowledges. If the broker is down, it backs off with jitter. It also runs the **retry scheduler** (due retries → queued), recovers stalled deliveries, and runs **retention** in bounded batches.
 - **Delivery worker:**

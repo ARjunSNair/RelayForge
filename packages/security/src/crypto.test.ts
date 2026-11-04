@@ -121,6 +121,47 @@ describe('webhook signatures', () => {
     });
   });
 
+  it('rejects a timestamp too far in the future', () => {
+    const header = signPayload(secret, ts, body);
+    expect(
+      verifySignature({
+        secret,
+        rawBody: body,
+        signatureHeader: header,
+        timestampHeader: String(ts),
+        now: ts - 301,
+      }),
+    ).toEqual({ ok: false, reason: 'TIMESTAMP_OUT_OF_TOLERANCE' });
+  });
+
+  it('honours a custom tolerance', () => {
+    const input = {
+      secret,
+      rawBody: body,
+      signatureHeader: signPayload(secret, ts, body),
+      timestampHeader: String(ts),
+      now: ts + 60,
+    };
+    expect(verifySignature({ ...input, toleranceSeconds: 30 }).ok).toBe(false);
+    expect(verifySignature({ ...input, toleranceSeconds: 60 }).ok).toBe(true);
+  });
+
+  it('rejects a non-numeric timestamp header as malformed', () => {
+    expect(
+      verifySignature({
+        secret,
+        rawBody: body,
+        signatureHeader: signPayload(secret, ts, body),
+        timestampHeader: '12abc',
+        now: ts,
+      }),
+    ).toEqual({ ok: false, reason: 'MALFORMED_HEADER' });
+  });
+
+  it('signs a Buffer body identically to the same string', () => {
+    expect(signPayload(secret, ts, Buffer.from(body, 'utf8'))).toBe(signPayload(secret, ts, body));
+  });
+
   it('rejects missing headers', () => {
     expect(
       verifySignature({ secret, rawBody: body, signatureHeader: undefined, timestampHeader: '1' })
