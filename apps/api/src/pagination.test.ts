@@ -15,6 +15,10 @@ describe('cursor', () => {
     'not-base64!',
     Buffer.from('{"a":1}').toString('base64url'),
     Buffer.from('["x","y"]').toString('base64url'),
+    // passes Date.parse but PostgreSQL would reject the timestamptz cast
+    Buffer.from('["Tue Nov 05 2026","0b6f1f0e-3f2a-4c43-9d0a-1f5a2b3c4d5e"]').toString('base64url'),
+    // 36 characters of the right alphabet, but not a UUID
+    Buffer.from(`["2026-10-21 12:00:00+00","${'-'.repeat(36)}"]`).toString('base64url'),
   ])('rejects %j', (raw) => {
     expect(() => decodeCursor(raw)).toThrow(/cursor is invalid/);
   });
