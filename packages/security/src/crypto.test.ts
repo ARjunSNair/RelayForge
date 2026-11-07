@@ -182,4 +182,16 @@ describe('fingerprint', () => {
     expect(fingerprint({ a: 1 })).not.toBe(fingerprint({ a: 2 }));
     expect(fingerprint([1, 2])).not.toBe(fingerprint([2, 1]));
   });
+
+  it('ignores undefined object members so they cannot change an idempotency fingerprint', () => {
+    expect(canonicalJson({ a: 1, b: undefined })).toBe('{"a":1}');
+    expect(fingerprint({ a: 1, b: undefined })).toBe(fingerprint({ a: 1 }));
+  });
+
+  it('serialises scalars and empty containers', () => {
+    expect(canonicalJson(null)).toBe('null');
+    expect(canonicalJson('x"y')).toBe('"x\\"y"');
+    expect(canonicalJson({})).toBe('{}');
+    expect(canonicalJson([])).toBe('[]');
+  });
 });
