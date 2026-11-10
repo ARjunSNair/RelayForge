@@ -46,6 +46,21 @@ describe('SecretKeyring', () => {
     expect(() => SecretKeyring.parsePrevious('nocolon')).toThrow();
     expect(SecretKeyring.parsePrevious(' ')).toEqual([]);
   });
+
+  it('parses several previous keys, trimming whitespace, and reports which ids it holds', () => {
+    expect(SecretKeyring.parsePrevious(` k1 : ${k1} , k0:${k2}`)).toEqual([
+      { id: 'k1', key: k1 },
+      { id: 'k0', key: k2 },
+    ]);
+    const ring = new SecretKeyring('k2', k2, [{ id: 'k1', key: k1 }]);
+    expect(ring.has('k2')).toBe(true);
+    expect(ring.has('k1')).toBe(true);
+    expect(ring.has('k0')).toBe(false);
+  });
+
+  it('rejects a previous-key spec with an empty id', () => {
+    expect(() => SecretKeyring.parsePrevious(`:${k1}`)).toThrow(/id:base64key/);
+  });
 });
 
 describe('SecretBox', () => {
@@ -62,6 +77,15 @@ describe('SecretBox', () => {
     const sealed = box.encrypt('whsec_example');
     sealed[sealed.length - 20]! ^= 0xff;
     expect(() => box.decrypt(sealed)).toThrow();
+  });
+
+  it('rejects keys that are not 32 bytes', () => {
+    expect(() => new SecretBox(randomBytes(16).toString('base64'))).toThrow(/32 bytes/);
+    expect(() => new SecretBox('')).toThrow(/32 bytes/);
+  });
+
+  it('rejects ciphertext shorter than an IV plus auth tag', () => {
+    expect(() => box.decrypt(Buffer.alloc(27))).toThrow(/too short/);
   });
 
   it('rejects the wrong key', () => {
