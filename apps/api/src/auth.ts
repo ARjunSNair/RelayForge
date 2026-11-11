@@ -36,6 +36,12 @@ export function tenantOf(request: FastifyRequest): AuthContext {
   return request.auth;
 }
 
+/** The credential from an `Authorization: Bearer <key>` header; the scheme is case-insensitive (RFC 9110 §11.1). */
+export function extractBearerToken(header: string | undefined): string | undefined {
+  const match = /^bearer[ \t]+(\S+)[ \t]*$/i.exec(header ?? '');
+  return match?.[1];
+}
+
 /**
  * Bearer API-key authentication for the encapsulated /v1 scope. The tenant is
  * derived from the credential only, never from the request (design §9.3).
@@ -43,8 +49,7 @@ export function tenantOf(request: FastifyRequest): AuthContext {
  */
 export function registerAuthentication(app: FastifyInstance, pool: Pool): void {
   app.addHook('onRequest', async (request) => {
-    const header = request.headers.authorization;
-    const key = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+    const key = extractBearerToken(request.headers.authorization);
     if (!key || !isWellFormedApiKey(key)) {
       throw new AppError('UNAUTHENTICATED', 'A valid API key is required');
     }
