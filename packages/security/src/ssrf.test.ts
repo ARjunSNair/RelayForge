@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import dns from 'node:dns';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkDestinationUrl, isBlockedAddress, safeLookup } from './ssrf.js';
 
 describe('isBlockedAddress', () => {
@@ -85,5 +86,57 @@ describe('safeLookup', () => {
   it('refuses in all-addresses mode too', async () => {
     const { err } = await lookup('localhost', true);
     expect(err?.code).toBe('DESTINATION_BLOCKED');
+  });
+
+  describe('with a stubbed resolver', () => {
+    const stub = (addresses: dns.LookupAddress[], error: NodeJS.ErrnoException | null = null) =>
+      vi
+        .spyOn(dns, 'lookup')
+        .mockImplementation(((
+          _host: string,
+          _opts: unknown,
+          cb: (err: NodeJS.ErrnoException | null, addrs: dns.LookupAddress[]) => void,
+        ) => cb(error, addresses)) as unknown as typeof dns.lookup);
+
+    afterEach(() => vi.restoreAllMocks());
+
+    it('returns the first public address in single-address mode', async () => {
+      stub([
+        { address: '93.184.216.34', family: 4 },
+        { address: '2606:2800:220:1::1', family: 6 },
+      ]);
+      const { err, address } = await lookup('example.com', false);
+      expect(err).toBeNull();
+      expect(address).toBe('93.184.216.34');
+    });
+
+    it('returns every address in all-addresses mode', async () => {
+      const addrs: dns.LookupAddress[] = [{ address: '93.184.216.34', family: 4 }];
+      stub(addrs);
+      const { err, address } = await lookup('example.com', true);
+      expect(err).toBeNull();
+      expect(address).toEqual(addrs);
+    });
+
+    it('refuses when any resolved address is non-public', async () => {
+      stub([
+        { address: '93.184.216.34', family: 4 },
+        { address: '10.0.0.5', family: 4 },
+      ]);
+      const { err } = await lookup('rebind.example.com', true);
+      expect(err?.code).toBe('DESTINATION_BLOCKED');
+    });
+
+    it('refuses an empty resolution', async () => {
+      stub([]);
+      const { err } = await lookup('empty.example.com', false);
+      expect(err?.code).toBe('DESTINATION_BLOCKED');
+    });
+
+    it('passes resolver errors through', async () => {
+      stub([], Object.assign(new Error('not found'), { code: 'ENOTFOUND' }));
+      const { err } = await lookup('missing.example.com', false);
+      expect(err?.code).toBe('ENOTFOUND');
+    });
   });
 });
