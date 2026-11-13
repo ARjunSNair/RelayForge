@@ -63,4 +63,29 @@ describe('config', () => {
     expect(config.METRICS_PORT).toBeUndefined();
     expect(() => loadWorkerConfig({ ...base, METRICS_TOKEN: 'short' })).toThrow(/METRICS_TOKEN/);
   });
+
+  it('parses booleans and numbers from strings', () => {
+    expect(
+      loadApiConfig({ ...base, ALLOW_INSECURE_DESTINATIONS: '1' }).ALLOW_INSECURE_DESTINATIONS,
+    ).toBe(true);
+    expect(loadApiConfig({ ...base, PORT: '8080' }).PORT).toBe(8080);
+    expect(() => loadApiConfig({ ...base, ALLOW_INSECURE_DESTINATIONS: 'yes' })).toThrow(
+      /ALLOW_INSECURE_DESTINATIONS/,
+    );
+  });
+
+  it('rejects non-positive or fractional numeric settings', () => {
+    expect(() => loadApiConfig({ ...base, PORT: '0' })).toThrow(/PORT/);
+    expect(() => loadApiConfig({ ...base, RATE_LIMIT_MAX: '1.5' })).toThrow(/RATE_LIMIT_MAX/);
+    expect(() => loadWorkerConfig({ ...base, METRICS_PORT: '70000' })).toThrow(/METRICS_PORT/);
+  });
+
+  it('allows the circuit breaker to be disabled with a zero threshold', () => {
+    expect(
+      loadWorkerConfig({ ...base, ENDPOINT_FAILURE_THRESHOLD: '0' }).ENDPOINT_FAILURE_THRESHOLD,
+    ).toBe(0);
+    expect(() => loadWorkerConfig({ ...base, ENDPOINT_FAILURE_THRESHOLD: '-1' })).toThrow(
+      /ENDPOINT_FAILURE_THRESHOLD/,
+    );
+  });
 });
