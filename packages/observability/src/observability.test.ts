@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { metricsAuthorized, statusClass } from './metrics.js';
+import type { AddressInfo } from 'node:net';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  metricsAuthorized,
+  registry,
+  scrapeGauge,
+  startMetricsServer,
+  statusClass,
+} from './metrics.js';
 import { formatTraceparent, parseTraceparent, startSpan } from './trace.js';
 
 describe('trace context', () => {
@@ -47,5 +54,56 @@ describe('metrics helpers', () => {
     expect(metricsAuthorized('s3cret', 's3cret')).toBe(false);
     expect(metricsAuthorized(undefined, 's3cret')).toBe(false);
     expect(metricsAuthorized('Bearer ', undefined)).toBe(false);
+  });
+});
+
+describe('scrapeGauge', () => {
+  it('reads its value at scrape time and replaces a gauge registered under the same name', async () => {
+    scrapeGauge('test_scrape_gauge', 'test gauge', async () => 1);
+    scrapeGauge('test_scrape_gauge', 'test gauge', async () => 7);
+    const body = await registry.metrics();
+    expect(body).toContain('test_scrape_gauge 7');
+    expect(body).not.toContain('test_scrape_gauge 1\n');
+    registry.removeSingleMetric('test_scrape_gauge');
+  });
+});
+
+describe('startMetricsServer', () => {
+  let server: ReturnType<typeof startMetricsServer> | undefined;
+
+  const start = async (token: string | undefined) => {
+    server = startMetricsServer({ port: 0, token });
+    if (!server.listening) await new Promise((resolve) => server!.once('listening', resolve));
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  };
+
+  afterEach(async () => {
+    const s = server;
+    server = undefined;
+    if (s) await new Promise((resolve) => s.close(resolve));
+  });
+
+  it('serves liveness without a token and ignores the query string', async () => {
+    const base = await start('s3cret');
+    const res = await fetch(`${base}/health/live?probe=1`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'ok' });
+  });
+
+  it('requires the bearer token for /metrics', async () => {
+    const base = await start('s3cret');
+    expect((await fetch(`${base}/metrics`)).status).toBe(401);
+    expect(
+      (await fetch(`${base}/metrics`, { headers: { authorization: 'Bearer nope' } })).status,
+    ).toBe(401);
+    const ok = await fetch(`${base}/metrics`, { headers: { authorization: 'Bearer s3cret' } });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-type')).toBe(registry.contentType);
+  });
+
+  it('hides /metrics entirely when no token is configured, and 404s other paths', async () => {
+    const base = await start(undefined);
+    expect((await fetch(`${base}/metrics`)).status).toBe(404);
+    expect((await fetch(`${base}/other`)).status).toBe(404);
   });
 });
