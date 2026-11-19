@@ -2,6 +2,11 @@ import { withTransaction, type Pool } from '@relayforge/database';
 import { generateApiKey, type ApiKeyMode } from '@relayforge/security';
 import { SCOPES } from './auth.js';
 
+function assertKnownScopes(scopes: readonly string[]): void {
+  const unknown = scopes.filter((s) => !(SCOPES as readonly string[]).includes(s));
+  if (unknown.length > 0) throw new Error(`Unknown scopes: ${unknown.join(', ')}`);
+}
+
 /**
  * Administrative provisioning: create a tenant and its first API key, which
  * holds every scope (including api_keys:manage for issuing further keys).
@@ -12,6 +17,7 @@ export async function createTenantWithApiKey(
   name: string,
   opts: { mode?: ApiKeyMode; scopes?: readonly string[] } = {},
 ): Promise<{ tenantId: string; apiKeyId: string; apiKey: string }> {
+  assertKnownScopes(opts.scopes ?? SCOPES);
   const { key, hash, prefix } = generateApiKey(opts.mode ?? 'live');
   return withTransaction(pool, async (tx) => {
     const tenant = await tx.query<{ id: string }>(
@@ -34,8 +40,7 @@ export async function createApiKey(
   opts: { mode?: ApiKeyMode; scopes?: readonly string[]; name?: string } = {},
 ): Promise<{ apiKeyId: string; apiKey: string; scopes: readonly string[] }> {
   const scopes = opts.scopes ?? SCOPES;
-  const unknown = scopes.filter((s) => !(SCOPES as readonly string[]).includes(s));
-  if (unknown.length > 0) throw new Error(`Unknown scopes: ${unknown.join(', ')}`);
+  assertKnownScopes(scopes);
   const { key, hash, prefix } = generateApiKey(opts.mode ?? 'live');
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO api_keys (tenant_id, name, key_prefix, key_hash, scopes)
