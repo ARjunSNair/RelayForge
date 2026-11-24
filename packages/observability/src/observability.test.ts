@@ -55,6 +55,14 @@ describe('metrics helpers', () => {
     expect(metricsAuthorized(undefined, 's3cret')).toBe(false);
     expect(metricsAuthorized('Bearer ', undefined)).toBe(false);
   });
+
+  it('accepts the Bearer scheme in any case but still rejects malformed headers', () => {
+    expect(metricsAuthorized('bearer s3cret', 's3cret')).toBe(true);
+    expect(metricsAuthorized('BEARER   s3cret ', 's3cret')).toBe(true);
+    expect(metricsAuthorized('Bearer ', 's3cret')).toBe(false);
+    expect(metricsAuthorized('Bearer s3cret extra', 's3cret')).toBe(false);
+    expect(metricsAuthorized('Basic s3cret', 's3cret')).toBe(false);
+  });
 });
 
 describe('scrapeGauge', () => {

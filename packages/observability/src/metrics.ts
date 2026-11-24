@@ -103,12 +103,14 @@ export function scrapeGauge(name: string, help: string, read: () => Promise<numb
 export const statusClass = (status: number): string => `${Math.floor(status / 100)}xx`;
 
 /**
- * True when `authorization` carries `Bearer <token>`. Compared in constant
- * time; a missing configured token never authorises.
+ * True when `authorization` carries `Bearer <token>` (the scheme is
+ * case-insensitive, RFC 9110 §11.1). Compared in constant time; a missing
+ * configured token never authorises.
  */
 export function metricsAuthorized(authorization: string | undefined, token: string | undefined) {
-  if (!token || !authorization?.startsWith('Bearer ')) return false;
-  const given = Buffer.from(authorization.slice(7).trim(), 'utf8');
+  const match = token ? /^bearer[ \t]+(\S+)[ \t]*$/i.exec(authorization ?? '') : null;
+  if (!token || !match) return false;
+  const given = Buffer.from(match[1]!, 'utf8');
   const expected = Buffer.from(token, 'utf8');
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
