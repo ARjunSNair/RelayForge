@@ -1,5 +1,8 @@
 import type { AddressInfo } from 'node:net';
+import { Writable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
+import { pino } from 'pino';
+import { createLogger, errorFields, REDACT_PATHS } from './index.js';
 import {
   metricsAuthorized,
   registry,
@@ -113,5 +116,48 @@ describe('startMetricsServer', () => {
     const base = await start(undefined);
     expect((await fetch(`${base}/metrics`)).status).toBe(404);
     expect((await fetch(`${base}/other`)).status).toBe(404);
+  });
+});
+
+describe('errorFields', () => {
+  it('keeps name and message, and a string code only', () => {
+    const err = Object.assign(new TypeError('boom'), { code: 'ECONNRESET' });
+    expect(errorFields(err)).toEqual({
+      err_name: 'TypeError',
+      err_message: 'boom',
+      err_code: 'ECONNRESET',
+    });
+    const numeric = Object.assign(new Error('x'), { code: 42 });
+    expect(errorFields(numeric)).toEqual({ err_name: 'Error', err_message: 'x' });
+  });
+
+  it('describes non-Error throwables without leaking structure', () => {
+    expect(errorFields('nope')).toEqual({ err_name: 'UnknownError', err_message: 'nope' });
+  });
+});
+
+describe('createLogger', () => {
+  it('redacts credentials and tags the service and environment', () => {
+    const lines: string[] = [];
+    const sink = new Writable({
+      write(chunk, _enc, cb) {
+        lines.push(String(chunk));
+        cb();
+      },
+    });
+    // createLogger writes to stdout; build the same configuration against a sink.
+    const log = pino({ redact: { paths: REDACT_PATHS, censor: '[REDACTED]' } }, sink);
+    log.info(
+      { req: { headers: { authorization: 'Bearer s3cret' } }, signingSecret: 'whsec_x' },
+      'm',
+    );
+    const out = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(lines[0]).not.toContain('s3cret');
+    expect(lines[0]).not.toContain('whsec_x');
+    expect(out.signingSecret).toBe('[REDACTED]');
+
+    const logger = createLogger({ service: 'api', level: 'warn', environment: 'test' });
+    expect(logger.level).toBe('warn');
+    expect(logger.bindings()).toEqual({ service: 'api', environment: 'test' });
   });
 });
